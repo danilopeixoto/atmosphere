@@ -1,0 +1,170 @@
+// Copyright (c) 2020, Danilo Peixoto. All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// * Redistributions of source code must retain the above copyright notice, this
+//   list of conditions and the following disclaimer.
+//
+// * Redistributions in binary form must reproduce the above copyright notice,
+//   this list of conditions and the following disclaimer in the documentation
+//   and/or other materials provided with the distribution.
+//
+// * Neither the name of the copyright holder nor the names of its
+//   contributors may be used to endorse or promote products derived from
+//   this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+void swap(output float a, output float b) {
+  float t = a;
+
+  a = b;
+  b = t;
+}
+
+int solveQuadratic(float a, float b, float c, output float x0, output float x1) {
+  if (b == 0) {
+    if (a == 0)
+      return 0;
+    
+    x0 = 0;
+    x1 = sqrt(-c / a);
+
+    return 1;
+  }
+
+  float d = b * b - 4 * a * c;
+
+  if (d < 0)
+    return 0;
+
+  float q = sqrt(d);
+
+  if (b < 0)
+    q = -0.5 * (b - q);
+  else
+    q = -0.5 * (b + q);
+
+  x0 = q / a;
+  x1 = c / q;
+
+  return 1;
+}
+
+int raySphereIntersect(vector origin, vector direction, float radius, output float t0, output float t1) {
+  float A = dot(direction, direction);
+  float B = 2.0 * dot(origin, direction);
+  float C = dot(origin, origin) - radius * radius;
+
+  if (!solveQuadratic(A, B, C, t0, t1))
+    return 0;
+
+  if (t0 > t1)
+    swap(t0, t1);
+
+  return 1;
+}
+
+float density(float h, float H) {
+  return exp(-h / H);
+}
+
+float raleighPhase(float mu) {
+  return 3.0 / (16.0 * M_PI) * (1.0 + mu * mu);
+}
+
+float miePhase(float g, float mu) {
+  float g2 = g * g;
+  float n = (1.0 - g2) * (1.0 + mu * mu);
+  float d = (2.0 + g2) * pow(1.0 + g2 - 2.0 * g * mu, 1.5);
+
+  return 3.0 / (8.0 * M_PI) * n / d;
+}
+
+shader atmosphere(
+  float lightIntensity = 10.0,
+  vector lightPosition = vector(0, 0, 1.0),
+  int lightSamples = 8,
+  int samples = 128,
+  vector raleighBeta = vector(3.8, 13.5, 33.1),
+  vector mieBeta = 21.0,
+  float outerRadius = 8.431,
+  float innerRadius = 6.371,
+  float raleighHeight = 0.2,
+  float mieHeight = 0.1,
+  float anisotropy = -0.76,
+  output color outputColor = 0)
+{
+  vector V = -I;
+  vector L = normalize(lightPosition);
+
+  float mu = dot(V, L);
+  
+  float phaseR = raleighPhase(mu);
+  float phaseM = miePhase(anisotropy, mu);
+
+  float t0, t1;
+  raySphereIntersect(P, I, outerRadius, t0, t1);
+
+  float stepSize = abs(t1 - t0) / samples;
+
+  vector sumR = 0;
+  vector sumM = 0;
+
+  float opticalDepthR = 0;
+  float opticalDepthM = 0;
+
+  for (int i = 0; i < samples; i++) {
+    vector position = P + stepSize * (i + 0.5) * I;
+    float height = length(position) - innerRadius;
+
+    float densityR = density(height, raleighHeight) * stepSize;
+    float densityM = density(height, mieHeight) * stepSize;
+
+    opticalDepthR += densityR;
+    opticalDepthM += densityM;
+
+    raySphereIntersect(position, L, outerRadius, t0, t1);
+
+    float stepSizeLight = (t1 - t0) / lightSamples;
+
+    float opticalDepthLightR = 0;
+    float opticalDepthLightM = 0;
+
+    int j;
+
+    for (j = 0; j < lightSamples; j++) {
+      vector lightPosition = position + stepSizeLight * (j + 0.5) * L;
+      float lightHeight = length(lightPosition) - innerRadius;
+
+      opticalDepthLightR += density(lightHeight, raleighHeight) * stepSizeLight;
+      opticalDepthLightM += density(lightHeight, mieHeight) * stepSizeLight;
+    }
+
+    if (j == lightSamples) { 
+      vector tauR = raleighBeta * (opticalDepthR + opticalDepthLightR);
+      vector tauM = 1.1 * mieBeta * (opticalDepthM + opticalDepthLightM);
+      vector tau = tauR + tauM;
+
+      vector attenuation = exp(-tau);
+        
+      sumR += attenuation * densityR;
+      sumM += attenuation * densityM;
+    }
+  }
+
+  vector raleighScattering = sumR * phaseR * raleighBeta;
+  vector mieScattering =  sumM * phaseM * mieBeta;
+
+  outputColor = lightIntensity * (raleighScattering + mieScattering);
+}
